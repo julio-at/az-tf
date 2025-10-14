@@ -1,0 +1,25 @@
+location = "eastus"
+
+resource_group_name = "aks-rg-demo"
+
+cluster_name = "aks-demo"
+
+/*
+  Opción A: versión exacta (deja "" para usar la más reciente del minor)
+*/
+kubernetes_version = ""
+
+/*
+  Opción B: minor prefix. Solo aplica si kubernetes_version == "".
+*/
+kubernetes_minor_prefix = "1.30"
+
+node_size  = "Standard_D2s_v5"
+node_count = 3
+
+tags = {
+  project = "aks-demo"
+  env     = "lab"
+  owner   = "julio"
+}
+

@@ -1,0 +1,34 @@
+# Terraform local state
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local-only files
+terraform.tfvars
+*.tfvars
+*.tfvars.json
+*.tfplan
+
+# Terraform working dir
+.terraform/
+
+# (Opcional) Si NO quieres versionar el lockfile, descomenta la línea siguiente:
+.terraform.lock.hcl
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env files / secrets
+.env
+.env.*
+
