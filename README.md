@@ -1,49 +1,61 @@
-# AKS on Azure with Terraform – End‑to‑End Guide (100% `ARM_*`, no scripts)
+# AKS on Azure with Terraform — Clone & Run
 
-This README walks you from **zero to a working AKS cluster** using **Terraform only** (no shell wrappers, no `--sdk-auth`). It assumes you’ll authenticate with a **Service Principal** via `ARM_*` environment variables.
+This repository lets you deploy an **AKS cluster** on Azure using **Terraform only** (no shell scripts, no `--sdk-auth`). You’ll authenticate with a **Service Principal** via `ARM_*` environment variables.
 
-> Short on time? Follow the **Quick Start**. Need context? Read **Concepts** and **Troubleshooting**.
+> TL;DR: **Clone → set `ARM_*` → edit `terraform.tfvars` → `terraform init/plan/apply` → `kubectl get nodes`.
 
----
 
-## 0) Prerequisites
+## 1) Clone this repo
 
-- **Azure Subscription**: You already created an **Enabled** subscription in the Azure Portal.
-- **Access**: Your user (or admin) can assign roles at the subscription scope.
+```bash
+git clone <YOUR_REPO_URL>.git
+cd aks-tf
+```
+
+> The project expects a standard Terraform layout and no one-liners in `.tf` files for readability.
+
+
+## 2) Repository layout
+
+```
+aks-tf/
+├─ versions.tf
+├─ providers.tf
+├─ variables.tf
+├─ main.tf
+├─ outputs.tf
+└─ terraform.tfvars
+```
+
+- `versions.tf` — pins Terraform & providers.
+- `providers.tf` — AzureRM provider using `ARM_*` env vars.
+- `variables.tf` — inputs for region, names, versions, VM size, etc.
+- `main.tf` — RG + AKS (Managed Identity, RBAC, Azure CNI Overlay, OIDC issuer).
+- `outputs.tf` — helpful outputs including kubeconfig (user).
+- `terraform.tfvars` — your real values (edit this).
+
+
+## 3) Prerequisites
+
+- **Azure Subscription**: must be **Enabled**. If you just created it, allow a few minutes for provider registration.
+- **Access**: your user/admin can assign roles on the subscription.
 - **Tools**:
-  - Azure CLI ≥ 2.44 (recommended)
+  - Azure CLI ≥ 2.44 (for validations and optional provider registration)
   - Terraform ≥ 1.8.0
-  - `kubectl` (optional for validation)
-
-> Tip: If the CLI ever “doesn’t see” the new subscription, `az logout && az login` usually fixes cache/tenant drift.
+  - `kubectl` (optional, for validation)
 
 
-## 1) Create/Locate the Subscription (Portal – recommended)
+## 4) Create/Use a Service Principal (SP)
 
-1. Azure Portal → **Cost Management + Billing** → ensure you know the **Billing Profile** and **Invoice Section**.
-2. Azure Portal → **Subscriptions** → **+ Add** → create the subscription (Production or Dev/Test).
-3. After creation, confirm the subscription is **Enabled** and note its **Subscription ID**.
-4. (Optional but recommended) In the subscription → **Resource providers**, register:
-   - `Microsoft.ContainerService`
-   - `Microsoft.Network`
-   - (Optional) `Microsoft.OperationalInsights`
+### Option A — Azure Portal
+1. **Microsoft Entra ID** → **App registrations** → **New registration** → Name `tf-aks`.
+2. Copy **Application (client) ID**.
+3. **Certificates & secrets** → **New client secret** → copy the **Value**.
+4. **Subscriptions** → your subscription → **Access control (IAM)** → **Add role assignment**:
+   - Role: **Contributor** (and optionally **User Access Administrator** if you’ll assign RBAC with TF).
+   - Member: the App you just created.
 
-> You can also create subscriptions via CLI/API, but the Portal avoids `billingScope` pitfalls.
-
-
-## 2) Create a Service Principal (SP) and Assign Roles
-
-You can do this via **Portal** or **CLI**.
-
-### 2.1 Portal (Entra ID)
-- **Microsoft Entra ID** → **App registrations** → **New registration** → Name: `tf-aks`
-- Copy **Application (client) ID** (this will be `ARM_CLIENT_ID`).
-- **Certificates & secrets** → **New client secret** → copy **Value** (this will be `ARM_CLIENT_SECRET`).
-- **Subscriptions** → your subscription → **Access control (IAM)** → **Add role assignment**:
-  - Role: **Contributor** (minimum) and, if you’ll assign roles via Terraform later, also **User Access Administrator**.
-  - Member: the **App** you just created.
-
-### 2.2 CLI (Alternative)
+### Option B — Azure CLI
 ```bash
 SUB_ID="<YOUR_SUBSCRIPTION_ID>"
 SP_NAME="tf-aks-$(date +%Y%m%d%H%M%S)"
@@ -59,12 +71,8 @@ From the output:
 - `password` → `ARM_CLIENT_SECRET`
 - `tenant`   → `ARM_TENANT_ID`
 
-> If role assignment fails here, assign from the Portal as shown above.
 
-
-## 3) Export `ARM_*` Environment Variables
-
-Required for the Terraform AzureRM provider (no `--sdk-auth`):
+## 5) Export `ARM_*` environment variables
 
 ```bash
 export ARM_TENANT_ID="<Directory (tenant) ID>"
@@ -73,226 +81,30 @@ export ARM_CLIENT_SECRET="<Client secret VALUE>"
 export ARM_SUBSCRIPTION_ID="<Subscription ID>"
 ```
 
-Validate:
+Quick check:
 ```bash
 env | grep ARM_ | sort
 ```
 
 
-## 4) Terraform Project Layout
+## 6) Edit `terraform.tfvars`
 
-Create a new folder, e.g. `aks-tf/`:
+Set region, names, version policy, and node size. Example (adjust to your case):
 
-```
-aks-tf/
-├─ versions.tf
-├─ providers.tf
-├─ variables.tf
-├─ main.tf
-├─ outputs.tf
-└─ terraform.tfvars
-```
-
-### 4.1 `versions.tf`
 ```hcl
-terraform {
-  required_version = ">= 1.8.0"
-
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 4.0.0"
-    }
-
-    time = {
-      source  = "hashicorp/time"
-      version = ">= 0.11.0"
-    }
-  }
-}
-```
-
-### 4.2 `providers.tf`
-```hcl
-provider "azurerm" {
-  features {}
-
-  /*
-    Authentication via environment variables:
-      ARM_TENANT_ID
-      ARM_CLIENT_ID
-      ARM_CLIENT_SECRET
-      ARM_SUBSCRIPTION_ID
-  */
-}
-```
-
-### 4.3 `variables.tf`
-```hcl
-variable "location" {
-  description = "Azure region (e.g., eastus, brazilsouth, westeurope)."
-  type        = string
-}
-
-variable "resource_group_name" {
-  description = "Name of the Resource Group."
-  type        = string
-}
-
-variable "cluster_name" {
-  description = "AKS cluster name (also used as DNS prefix)."
-  type        = string
-}
-
-variable "kubernetes_version" {
-  description = "Exact Kubernetes version (e.g., 1.30.6). If empty, the latest stable patch of the minor prefix is used."
-  type        = string
-  default     = ""
-}
-
-variable "kubernetes_minor_prefix" {
-  description = "Minor prefix (e.g., 1.30). Only used when kubernetes_version == \"\"."
-  type        = string
-  default     = "1.30"
-}
-
-variable "node_size" {
-  description = "VM size (e.g., Standard_D2s_v4, Standard_D2s_v3, Standard_B4ms)."
-  type        = string
-}
-
-variable "node_count" {
-  description = "Number of nodes for the default pool."
-  type        = number
-  default     = 3
-}
-
-variable "tags" {
-  description = "Common tags for resources."
-  type        = map(string)
-  default = {
-    project = "aks-demo"
-    env     = "lab"
-    owner   = "julio"
-  }
-}
-```
-
-### 4.4 `main.tf`
-```hcl
-resource "azurerm_resource_group" "rg" {
-  name     = var.resource_group_name
-  location = var.location
-  tags     = var.tags
-}
-
-data "azurerm_kubernetes_service_versions" "available" {
-  location        = var.location
-  include_preview = false
-  version_prefix  = var.kubernetes_minor_prefix
-}
-
-locals {
-  effective_k8s_version = (
-    var.kubernetes_version != ""
-      ? var.kubernetes_version
-      : data.azurerm_kubernetes_service_versions.available.latest_version
-  )
-}
-
-resource "time_sleep" "after_rg" {
-  create_duration = "15s"
-  depends_on      = [azurerm_resource_group.rg]
-}
-
-resource "azurerm_kubernetes_cluster" "aks" {
-  name                = var.cluster_name
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-  dns_prefix          = "${var.cluster_name}-dns"
-
-  kubernetes_version  = local.effective_k8s_version
-
-  identity {
-    type = "SystemAssigned"
-  }
-
-  role_based_access_control_enabled = true
-
-  network_profile {
-    network_plugin      = "azure"
-    network_plugin_mode = "overlay"
-    load_balancer_sku   = "standard"
-    outbound_type       = "loadBalancer"
-  }
-
-  default_node_pool {
-    name        = "sysnp"
-    vm_size     = var.node_size
-    node_count  = var.node_count
-    os_sku      = "AzureLinux"  # Azure Linux (AL2023). Consider AzureLinux3 for new pools in future.
-    upgrade_settings {
-      max_surge = "33%"
-    }
-    only_critical_addons_enabled = true
-  }
-
-  oidc_issuer_enabled = true
-  sku_tier            = "Free"
-  tags                = var.tags
-
-  depends_on = [time_sleep.after_rg]
-}
-```
-
-### 4.5 `outputs.tf`
-```hcl
-data "azurerm_client_config" "current" {}
-
-output "subscription_id" {
-  description = "Subscription ID used by provider."
-  value       = data.azurerm_client_config.current.subscription_id
-}
-
-output "resource_group" {
-  description = "Resource Group name."
-  value       = azurerm_resource_group.rg.name
-}
-
-output "aks_name" {
-  description = "AKS cluster name."
-  value       = azurerm_kubernetes_cluster.aks.name
-}
-
-output "k8s_version" {
-  description = "Effective Kubernetes version."
-  value       = azurerm_kubernetes_cluster.aks.kubernetes_version
-}
-
-output "kube_config_raw" {
-  description = "User kubeconfig for kubectl."
-  value       = azurerm_kubernetes_cluster.aks.kube_config_raw
-  sensitive   = true
-}
-```
-
-### 4.6 `terraform.tfvars` (example)
-```hcl
-location            = "eastus"          # or eastus2 / westeurope / brazilsouth ...
-
+location            = "eastus"          # e.g., eastus / eastus2 / westeurope / brazilsouth
 resource_group_name = "aks-rg-demo"
 cluster_name        = "aks-demo"
 
-# Option A: leave empty to use the latest stable patch of the minor below
+# Option A: keep empty to use latest stable patch of the minor prefix
 kubernetes_version       = ""
-
-# Option B: define minor prefix
+# Option B: define minor prefix (used only when kubernetes_version == "")
 kubernetes_minor_prefix  = "1.30"
 
-# IMPORTANT: choose an allowed size for your subscription/region:
-#   Standard_D2s_v4, Standard_D2s_v3, or Standard_B4ms (for labs) are widely available.
-node_size   = "Standard_D2s_v4"
-node_count  = 3
+# IMPORTANT: choose a size allowed in your subscription/region:
+# e.g., Standard_D2s_v4 or Standard_D2s_v3 are broadly available; Standard_B4ms for labs.
+node_size  = "Standard_D2s_v4"
+node_count = 3
 
 tags = {
   project = "aks-demo"
@@ -301,8 +113,10 @@ tags = {
 }
 ```
 
+> If you need exact version pinning for production, set `kubernetes_version = "1.30.x"` and ignore the minor prefix.
 
-## 5) Initialize, Plan, Apply
+
+## 7) Initialize, plan, and apply
 
 ```bash
 terraform init -upgrade
@@ -312,11 +126,11 @@ terraform apply -auto-approve tfplan
 ```
 
 Provisioning notes:
-- New subscriptions may have **eventual consistency**; the small `time_sleep` helps.
-- If you see **SKU not allowed** or **quota** errors, pick an allowed `node_size` or another region; or request quota increases.
+- New subscriptions may need provider registration; see Troubleshooting.
+- If a VM size is not allowed in your region, switch to a listed size or a different region.
 
 
-## 6) Use `kubectl` without Azure CLI
+## 8) Use `kubectl` (without Azure CLI)
 
 ```bash
 terraform output -raw kube_config_raw > kubeconfig
@@ -326,66 +140,64 @@ kubectl cluster-info
 kubectl get nodes -o wide
 ```
 
-> Prefer **exact version pinning** (`kubernetes_version = "1.30.x"`) for production to avoid drift on future plans.
+> The kubeconfig output is **sensitive** — keep it private.
 
 
-## 7) Verify Regions (where did resources land?)
+## 9) How to see the deployed regions
 
-**Portal**:
-- Search `aks-demo` (Kubernetes services) → **Overview** → **Region**
-- `aks-rg-demo` (Resource group) → **Overview** → **Location**
+**Portal**
+- Search `aks-demo` → **Overview** → **Region**
+- Open resource group `aks-rg-demo` → **Overview** → **Location**
 - `Kubernetes services → aks-demo → Properties` → **Node resource group**
 
-**CLI**:
+**CLI**
 ```bash
 az group show -n aks-rg-demo --query location -o tsv
-az aks show -g aks-rg-demo -n aks-demo --query location -o tsv
+az aks show  -g aks-rg-demo -n aks-demo --query location -o tsv
 az resource list -g aks-rg-demo -o table
 NRG=$(az aks show -g aks-rg-demo -n aks-demo --query nodeResourceGroup -o tsv); echo $NRG
 az group show -n "$NRG" --query location -o tsv
 ```
 
 
-## 8) Common Issues & Fixes
-
-- **OIDCIssuerUnsupportedK8sVersion**  
-  Ensure `kubernetes_version >= 1.21` (recommend 1.28+). Pin a valid patch available in your region.
-
-- **VM size not allowed in region**  
-  Choose `node_size` from the **allowed list** or switch region. Typical safe picks: `Standard_D2s_v4`, `Standard_D2s_v3`, `Standard_B4ms` (lab).
+## 10) Troubleshooting (quick)
 
 - **Subscription not visible in CLI**  
-  `az logout && az login` (ensure correct tenant). Confirm RBAC (Contributor/Owner) on the new subscription.
+  `az logout && az login` (ensure correct tenant). Confirm you have **Contributor/Owner** on the subscription.
 
 - **Provider not registered**  
-  Once per subscription, register `Microsoft.ContainerService` and `Microsoft.Network` in Portal, or:
+  In Portal → Subscription → **Resource providers** → register
+  - `Microsoft.ContainerService`, `Microsoft.Network`  
+  Or via CLI:
   ```bash
   az provider register --namespace Microsoft.Network --wait
   az provider register --namespace Microsoft.ContainerService --wait
   ```
 
-- **Kubeconfig handling**  
-  The output is **sensitive**. Protect the file and avoid committing it.
+- **VM size not allowed / quota**  
+  Choose a size from the error’s allow-list (e.g., `Standard_D2s_v4`, `Standard_D2s_v3`) or switch region. Review quotas:
+  ```bash
+  az vm list-usage -l <region> -o table
+  ```
+
+- **OIDC issuer requires >= 1.21**  
+  Set `kubernetes_version` to a supported patch (recommend 1.28+; e.g., `1.30.x`).
+
+- **Data source version mismatch**  
+  If `kubernetes_version = ""` and the minor prefix isn’t available in your region, pick a valid minor or pin an exact patch.
 
 
-## 9) Next Steps (Optional)
+## 11) Clean up
 
-- **Workload node pool**: Create a separate `azurerm_kubernetes_cluster_node_pool` for apps and keep `sysnp` for critical add-ons.
-- **Workload Identity**: With `oidc_issuer_enabled = true`, configure federated credentials per workload (`azurerm_federated_identity_credential`).
-- **Observability**: Add Log Analytics workspace and Container Insights in Terraform.
-- **Budgets/Alerts**: Define budgets at subscription or resource group scope for FinOps.
-- **Upgrades**: For production, pin exact versions and plan controlled upgrades (surge, surge pools).
-
-
-## 10) Clean Up
-
-To destroy all resources created by this project (AKS and RG):
 ```bash
 terraform destroy -auto-approve
 ```
 
-> Warning: This deletes the cluster and its node resource group as well.
+> This deletes the AKS cluster and its node resource group.
 
----
 
-**Author’s note:** This flow was curated for a frictionless “100% Terraform” experience with Azure AKS using `ARM_*` env vars, avoiding `--sdk-auth` and shell wrappers.
+## 12) Next steps (optional)
+
+- Add a **workload node pool** (`azurerm_kubernetes_cluster_node_pool`) and keep `sysnp` for critical add-ons.
+- Configure **Workload Identity** (OIDC) for workloads that need Azure APIs.
+- Add **Log Analytics** / **Container Insights** and **Budgets/Alerts** — all via Terraform.
