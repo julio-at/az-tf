@@ -8,7 +8,7 @@ This repository lets you deploy an **AKS cluster** on Azure using **Terraform on
 ## 1) Clone this repo
 
 ```bash
-git clone <YOUR_REPO_URL>.git
+git clone https://github.com/julio-at/do-doks-tf.git 
 cd aks-tf
 ```
 
