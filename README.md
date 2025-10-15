@@ -8,8 +8,8 @@ This repository lets you deploy an **AKS cluster** on Azure using **Terraform on
 ## 1) Clone this repo
 
 ```bash
-git clone https://github.com/julio-at/do-doks-tf.git 
-cd aks-tf
+git clone https://github.com/julio-at/az-tf.git 
+cd az-tf
 ```
 
 > The project expects a standard Terraform layout and no one-liners in `.tf` files for readability.
@@ -18,7 +18,7 @@ cd aks-tf
 ## 2) Repository layout
 
 ```
-aks-tf/
+az-tf/
 ├─ versions.tf
 ├─ providers.tf
 ├─ variables.tf
